@@ -46,6 +46,7 @@
             "game-02": {
                 "enabled": true,
                 "move-to-Content": [],
+                "copy-to-content": [],
                 "keep-only-content": true
             }
         }

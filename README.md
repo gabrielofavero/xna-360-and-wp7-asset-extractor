@@ -51,15 +51,15 @@ Copy `config-example.json` and edit it for your game:
 ```jsonc
 {
     "content": {
-        "my-game": {                  // put any game id you wish
-            "type": "package",        // "game-dir" | "package" | "content-dir"
-            "asset-type": "360",      // "XAP" | "360" (only for type=package)
-            "src": "./my-game"        // path relative to where you run the script
+        "my-game": {                         // put any game id you wish
+            "type": "package",               // "game-dir" | "package" | "content-dir"
+            "asset-type": "360",             // "XAP" | "360" (only for type=package)
+            "src": "./my-game"               // path relative to where you run the script
         }
     },
     "convert": {
         "enabled": true,
-        "content": {                 // you can leave an empty object if you wish the default config
+        "content": {                         // you can leave an empty object if you wish the default config
             "my-game": {
                 "convert-wma-to-ogg": true,
                 "ignore": []
@@ -70,11 +70,12 @@ Copy `config-example.json` and edit it for your game:
         "enabled": true,
         "delete-extracted-dir": false,
         "delete-converted-dir": false,
-        "content": {                 // you can leave an empty object if you wish the default config
+        "content": {                         // you can leave an empty object if you wish the default config
             "my-game": {
                 "enabled": true,
-                "move-to-Content": [],
-                "keep-only-content": true
+                "move-to-Content": [],      // move things from game dir root into Content
+                "copy-to-content": [],      // copies things from CWD-relative path into Content
+                "keep-only-content": true   // Deletes everything from output/my-game except for Content dir
             }
         }
     }
@@ -95,7 +96,13 @@ Output lands in `output/<game-id>/`. The pipeline runs in order:
 2. Convert `.xnb` files → `converted/<game-id>/`
 3. Convert `.wma` → `.ogg` (requires [ffmpeg](https://ffmpeg.org/))
 4. Assemble final output → `output/<game-id>/`
-5. Post-process (`move-to-Content`, `keep-only-content`)
+5. Post-process (`move-to-Content`, `copy-to-content`, `keep-only-content`)
+
+**Post-process options:**
+
+- `move-to-Content` — list of paths inside the game output to move into `Content/`. Use `../` prefix for paths outside the game root (copied instead of moved).
+- `copy-to-content` — list of CWD-relative paths to copy into `Content/` (destination keeps the source's basename). Useful for pulling in project files (fonts, manifests) that weren't part of the extracted package.
+- `keep-only-content` — when `true`, deletes everything outside `Content/` in the output folder.
 
 ### Individual steps (CLI)
 

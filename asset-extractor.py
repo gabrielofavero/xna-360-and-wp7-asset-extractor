@@ -260,6 +260,24 @@ def convert_xnb(cfg):
         export_dir = os.path.join("converted", game_id)
         read_xnb_dir(content_dir, export_dir)
 
+        # Delete converted outputs for ignored .xnb files
+        ignored_xnbs = [f for f in xnb_files if _is_ignored(f, ignore_list)]
+        if ignored_xnbs and os.path.isdir(export_dir):
+            print("[{}] Cleaning up {} ignored .xnb(s) from converted..."
+                  .format(game_id, len(ignored_xnbs)))
+            for xnb_rel in ignored_xnbs:
+                base = os.path.splitext(xnb_rel)[0]
+                base_name = os.path.basename(base)
+                # Remove any converted file(s) in export_dir with same basename
+                for dirpath, _, filenames in os.walk(export_dir):
+                    for fname in list(filenames):
+                        fbase = os.path.splitext(fname)[0]
+                        if fbase == base_name:
+                            fpath = os.path.join(dirpath, fname)
+                            print("    Removing ignored converted: {}".format(
+                                os.path.relpath(fpath, export_dir)))
+                            os.remove(fpath)
+
 
 # ---------------------------------------------------------------------------
 # 5. WMA → OGG Conversion
@@ -434,6 +452,7 @@ def post_output_adjustments(cfg):
     """
     Per game-id:
       - move-to-Content[]: move/copy paths into Content/
+      - copy-to-content[]: copy external files (CWD-relative) into Content/
       - keep-only-content: delete everything outside Content/
     """
     output_cfg = cfg.get("output", {})
@@ -470,12 +489,10 @@ def post_output_adjustments(cfg):
                 src_path = os.path.join(out_dir, item)
                 dest_path = os.path.join(out_content, item)
                 if os.path.isdir(src_path):
-                    print("[{}] Moving {} -> Content/{}".format(
+                    print("[{}] Merging {} -> Content/{}".format(
                         game_id, item, item))
-                    if os.path.exists(dest_path):
-                        shutil.rmtree(dest_path)
-                    os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                    shutil.move(src_path, dest_path)
+                    _copytree_merge(src_path, dest_path)
+                    shutil.rmtree(src_path)
                 elif os.path.isfile(src_path):
                     print("[{}] Moving {} -> Content/{}".format(
                         game_id, item, item))
@@ -484,6 +501,30 @@ def post_output_adjustments(cfg):
                 else:
                     print("[{}] WARNING: move-to-Content path not found: '{}'"
                           .format(game_id, item))
+
+        # copy-to-content
+        copy_list = game_output.get("copy-to-content", [])
+        for src_rel in copy_list:
+            src_rel = src_rel.replace("\\", "/").rstrip("/")
+            src_path = os.path.normpath(
+                os.path.join(os.getcwd(), src_rel)
+            )
+            dest_name = os.path.basename(src_rel)
+            dest_path = os.path.join(out_content, dest_name)
+            if os.path.isfile(src_path):
+                print("[{}] Copying {} -> Content/{}".format(
+                    game_id, src_rel, dest_name))
+                os.makedirs(out_content, exist_ok=True)
+                shutil.copy2(src_path, dest_path)
+            elif os.path.isdir(src_path):
+                print("[{}] Copying {} -> Content/{}".format(
+                    game_id, src_rel, dest_name))
+                if os.path.exists(dest_path):
+                    shutil.rmtree(dest_path)
+                shutil.copytree(src_path, dest_path)
+            else:
+                print("[{}] WARNING: copy-to-content source not found: '{}'"
+                      .format(game_id, src_rel))
 
         # keep-only-content
         if game_output.get("keep-only-content", True):
