@@ -96,7 +96,7 @@ def load_config(config_path):
 # ---------------------------------------------------------------------------
 def get_convert_settings(cfg, game_id):
     """Return (convert_wma_to_ogg, ignore_list) for a game, applying defaults."""
-    game_convert = cfg.get("convert", {}).get(game_id, {})
+    game_convert = cfg.get("convert", {}).get("content", {}).get(game_id, {})
     wma = game_convert.get("convert-wma-to-ogg", DEFAULT_CONVERT_WMA_TO_OGG)
     ignore = game_convert.get("ignore", list(DEFAULT_IGNORE_LIST))
     return wma, ignore
@@ -233,8 +233,11 @@ def convert_xnb(cfg):
     for .xnb files, skip ignored, and call read_xnb_dir.
     """
     convert_section = cfg.get("convert", {})
+    if not convert_section.get("enabled", True):
+        print("XNB conversion disabled. Skipping.")
+        return
 
-    for game_id in convert_section:
+    for game_id in convert_section.get("content", {}):
         content_dir = os.path.join("extracted", game_id, "Content")
         if not os.path.isdir(content_dir):
             print("[{}] WARNING: Content dir not found: '{}'. Skipping XNB "
@@ -267,8 +270,11 @@ def convert_wma_to_ogg(cfg):
     skip ignored, and convert to .ogg with ffmpeg.
     """
     convert_section = cfg.get("convert", {})
+    if not convert_section.get("enabled", True):
+        print("WMA conversion disabled. Skipping.")
+        return
 
-    for game_id in convert_section:
+    for game_id in convert_section.get("content", {}):
         wma_enabled, ignore_list = get_convert_settings(cfg, game_id)
         if not wma_enabled:
             continue
@@ -327,7 +333,7 @@ def assemble_output(cfg, content_types):
         return
 
     for game_id, ctype in content_types.items():
-        game_output = output_cfg.get(game_id, {})
+        game_output = output_cfg.get("content", {}).get(game_id, {})
         if not game_output.get("enabled", True):
             print("[{}] Output disabled. Skipping.".format(game_id))
             continue
@@ -432,11 +438,7 @@ def post_output_adjustments(cfg):
     """
     output_cfg = cfg.get("output", {})
 
-    for game_id in output_cfg:
-        if game_id in ("enabled", "delete-extracted-dir", "delete-converted-dir"):
-            continue  # skip top-level output keys
-
-        game_output = output_cfg[game_id]
+    for game_id, game_output in output_cfg.get("content", {}).items():
         out_dir = os.path.join("output", game_id)
         out_content = os.path.join(out_dir, "Content")
 
@@ -516,48 +518,223 @@ def cleanup(cfg):
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Standalone CLI command handlers
 # ---------------------------------------------------------------------------
-def main():
-    parser = argparse.ArgumentParser(
-        description="Generic config-driven XNA-to-FNA asset extractor.")
-    parser.add_argument(
-        "config",
-        help="Path to the JSON configuration file.",
-    )
-    args = parser.parse_args()
-
-    # 1. Load & Validate Config
+def cmd_config(args):
+    """Run the full pipeline from a JSON config file."""
     cfg = load_config(args.config)
 
-    # 3. Pre-flight: check ffmpeg if any game wants WMA-to-OGG conversion
+    # Pre-flight: check ffmpeg if any game wants WMA-to-OGG conversion
     convert_section = cfg.get("convert", {})
     needs_ffmpeg = any(
         get_convert_settings(cfg, gid)[0]
-        for gid in convert_section
+        for gid in convert_section.get("content", {})
     )
     if needs_ffmpeg:
         check_ffmpeg()
 
-    # 2. Content Extraction
     content_types = extract_content(cfg)
-
-    # 4. XNB Conversion
     convert_xnb(cfg)
-
-    # 5. WMA → OGG Conversion
     convert_wma_to_ogg(cfg)
-
-    # 6. Output Assembly
     assemble_output(cfg, content_types)
-
-    # 7. Post-Output Adjustments
     post_output_adjustments(cfg)
-
-    # 8. Cleanup
     cleanup(cfg)
 
     print("\nDone! All assets processed successfully.")
+
+
+def cmd_extract_360(args):
+    """Extract an Xbox 360 STFS package."""
+    pkg_path = args.path
+    if not os.path.isfile(pkg_path):
+        die("Package not found: '{}'".format(pkg_path))
+    dest = args.output or "extracted"
+    os.makedirs(dest, exist_ok=True)
+    print("Extracting 360 STFS package: {} -> {}".format(pkg_path, dest))
+    extract_live_pirs(pkg_path, dest)
+    print("Done.")
+
+
+def cmd_extract_xap(args):
+    """Extract a Windows Phone XAP package."""
+    pkg_path = args.path
+    if not os.path.isfile(pkg_path):
+        die("Package not found: '{}'".format(pkg_path))
+    dest = args.output or "extracted"
+    os.makedirs(dest, exist_ok=True)
+    print("Extracting XAP package: {} -> {}".format(pkg_path, dest))
+    _extract_xap(pkg_path, dest)
+    print("Done.")
+
+
+def cmd_convert(args):
+    """Convert .xnb files (and optionally .wma) from a content directory."""
+    content_dir = args.content_dir
+    if not os.path.isdir(content_dir):
+        die("Content directory not found: '{}'".format(content_dir))
+
+    ignore_list = args.ignore or []
+    export_dir = args.output or "converted"
+
+    # Convert .xnb files
+    xnb_files = list(find_files_by_ext(content_dir, ".xnb"))
+    active_xnbs = [f for f in xnb_files if not _is_ignored(f, ignore_list)]
+
+    if active_xnbs:
+        print("Converting {} .xnb file(s)...".format(len(active_xnbs)))
+        os.makedirs(export_dir, exist_ok=True)
+        read_xnb_dir(content_dir, export_dir)
+    else:
+        print("No .xnb files to convert.")
+
+    # Optionally convert .wma files
+    if args.wma_to_ogg:
+        check_ffmpeg()
+        wma_files = list(find_files_by_ext(content_dir, ".wma"))
+        active_wmas = [f for f in wma_files if not _is_ignored(f, ignore_list)]
+
+        if active_wmas:
+            print("Converting {} .wma file(s) to .ogg...".format(len(active_wmas)))
+            os.makedirs(export_dir, exist_ok=True)
+            for rel in active_wmas:
+                full_path = os.path.join(content_dir, rel)
+                ogg_rel = os.path.splitext(rel)[0] + ".ogg"
+                ogg_path = os.path.join(export_dir, ogg_rel)
+                ogg_dir = os.path.dirname(ogg_path)
+                if ogg_dir:
+                    os.makedirs(ogg_dir, exist_ok=True)
+                print("    {} -> {}".format(rel, ogg_rel))
+                subprocess.check_call([
+                    "ffmpeg", "-y",
+                    "-i", full_path,
+                    "-c:a", "libvorbis",
+                    "-q:a", "6",
+                    ogg_path,
+                ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            print("No .wma files to convert.")
+
+    print("Done.")
+
+
+def cmd_assemble(args):
+    """Assemble extracted and converted assets into a final output directory."""
+    ext_dir = args.extracted_dir
+    conv_dir = args.converted_dir
+    out_dir = args.output
+
+    if not os.path.isdir(ext_dir):
+        die("Extracted directory not found: '{}'".format(ext_dir))
+
+    # Clean output dir
+    if os.path.exists(out_dir):
+        shutil.rmtree(out_dir)
+    os.makedirs(out_dir)
+
+    # Copy extracted content
+    print("Copying extracted content -> output...")
+    _copytree_merge(ext_dir, out_dir)
+
+    # Merge converted content
+    if os.path.isdir(conv_dir):
+        out_content = os.path.join(out_dir, "Content")
+        print("Merging converted assets -> output...")
+        _copytree_merge(conv_dir, out_content)
+
+    # Clean up .xnb / .wma originals that have converted counterparts
+    _cleanup_converted_originals_standalone(out_dir)
+
+    print("Done.")
+
+
+def _cleanup_converted_originals_standalone(out_dir):
+    """Delete .xnb/.wma files that have a converted counterpart (no ignore list)."""
+    out_content = os.path.join(out_dir, "Content")
+    if not os.path.isdir(out_content):
+        return
+
+    converted_extensions = {
+        ".png", ".wav", ".ogg", ".wma", ".xml", ".fxb", ".spritefont",
+        ".bmp", ".jpg", ".jpeg", ".tga", ".dds",
+    }
+
+    for dirpath, _, filenames in os.walk(out_content):
+        for fname in filenames:
+            full = os.path.join(dirpath, fname)
+            rel = os.path.relpath(full, out_content)
+
+            base, ext = os.path.splitext(fname)
+            ext_lower = ext.lower()
+
+            if ext_lower not in (".xnb", ".wma"):
+                continue
+
+            has_counterpart = False
+            for other in filenames:
+                other_base, other_ext = os.path.splitext(other)
+                if other_base == base and other_ext.lower() in converted_extensions:
+                    has_counterpart = True
+                    break
+
+            if has_counterpart:
+                print("    Removing original: {}".format(rel))
+                os.remove(full)
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="XNA-to-FNA asset extractor. Use a JSON config or run "
+                    "individual steps from the command line.")
+    sub = parser.add_subparsers(dest="command", help="Available commands")
+
+    # config <file>
+    p_config = sub.add_parser("config", help="Run the full pipeline from a JSON config file")
+    p_config.add_argument("config", help="Path to the JSON configuration file")
+    p_config.set_defaults(func=cmd_config)
+
+    # extract-360 <path> [--output <dir>]
+    p_e360 = sub.add_parser("extract-360", help="Extract an Xbox 360 STFS package")
+    p_e360.add_argument("path", help="Path to the 360 package file")
+    p_e360.add_argument("--output", "-o", default="extracted",
+                        help="Output directory (default: extracted)")
+    p_e360.set_defaults(func=cmd_extract_360)
+
+    # extract-xap <path> [--output <dir>]
+    p_exap = sub.add_parser("extract-xap", help="Extract a Windows Phone XAP package")
+    p_exap.add_argument("path", help="Path to the .xap file")
+    p_exap.add_argument("--output", "-o", default="extracted",
+                        help="Output directory (default: extracted)")
+    p_exap.set_defaults(func=cmd_extract_xap)
+
+    # convert <content-dir> [--output <dir>] [--ignore ...] [--wma-to-ogg]
+    p_conv = sub.add_parser("convert", help="Convert .xnb (and optionally .wma) files")
+    p_conv.add_argument("content_dir", help="Path to the Content directory with .xnb files")
+    p_conv.add_argument("--output", "-o", default="converted",
+                        help="Output directory (default: converted)")
+    p_conv.add_argument("--ignore", "-i", nargs="*", default=[],
+                        help="File patterns to ignore (e.g. 'Arial.xnb')")
+    p_conv.add_argument("--wma-to-ogg", action="store_true",
+                        help="Also convert .wma files to .ogg (requires ffmpeg)")
+    p_conv.set_defaults(func=cmd_convert)
+
+    # assemble <extracted-dir> <converted-dir> --output <dir>
+    p_asm = sub.add_parser("assemble", help="Assemble final output from extracted and converted dirs")
+    p_asm.add_argument("extracted_dir", help="Path to the extracted assets directory")
+    p_asm.add_argument("converted_dir", help="Path to the converted assets directory")
+    p_asm.add_argument("--output", "-o", required=True,
+                       help="Output directory for the assembled result")
+    p_asm.set_defaults(func=cmd_assemble)
+
+    args = parser.parse_args()
+
+    if args.command is None:
+        parser.print_help()
+        sys.exit(1)
+
+    args.func(args)
 
 
 if __name__ == "__main__":

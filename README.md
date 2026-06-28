@@ -1,10 +1,36 @@
-# XNA to FNA asset extractor
+# XNA Asset Extractor for Xbox 360 and Windows Phone 7 (.xap)
 
 ## Overview
 
-I've created this tool to ease the process of extracting and converting assets from old Xbox 360 Indie games or Windows Phone XAP files. I didn't considered PC ports as we have many good tools already.
+I've made this tool to ease the preparation process of Xbox 360 and Windows Phone 7 XNA game assets, so that we can use them with FNA / MonoGame.
 
-I'm using some submodules to get things done. so thank you the original devs for the implementation!
+In most cases, just extracting the assets is enough, but I've added a conversion stage if you want to handle the raw assets directly. I always recommend converting the xnbs because even if it means messing with the code more to read them raw, you now have assets you can modify directly.
+
+### 1. Extract
+
+Takes a packaged game (`.xap` or Xbox 360 STFS archive) and unpacks it into a plain folder structure. If your game is already extracted, you can point directly to its folder and this step is skipped.
+
+### 2. Convert
+
+Processes the raw XNA assets so they work better with FNA (this is very useful for 360 indies):
+
+- **`.xnb` files** → decompiled back into standard formats (`.png`, `.wav`, `.xml`, etc.)
+- **`.wma` audio** → converted to `.ogg` (requires [ffmpeg](https://ffmpeg.org/))
+
+You can ignore specific files (like fonts) if you don't want them converted.
+
+### 3. Output
+
+Assembles the final folder for your project:
+
+- Merges extracted and converted assets together
+- Moves folders into a clean `Content/` structure
+- Removes leftover `.xnb`/`.wma` originals that already have converted versions
+- Optionally deletes intermediate `extracted/` and `converted/` folders
+
+---
+
+Built on top of [xnb_parse](https://github.com/fesh0r/xnb_parse) by Andrew McRae and [XBLA-Extract](https://github.com/ryzendew/XBLA-Extract) by ryzendew. Thanks!
 
 ## Setup
 
@@ -18,47 +44,49 @@ git submodule update --init --recursive
 
 ## Configuration
 
+A JSON config is the recommended approach when you want to embed this tool in a repo alongside your game's source code. It lets contributors or downstream users get a working `Content/` folder with a single command, so no need to hunt down packages, remember CLI flags, or run multiple steps by hand. The config also supports multiple games at once.
+
 Copy `config-example.json` and edit it for your game:
 
 ```jsonc
 {
     "content": {
-        "my-game": {
+        "my-game": {                  // put any game id you wish
             "type": "package",        // "game-dir" | "package" | "content-dir"
             "asset-type": "360",      // "XAP" | "360" (only for type=package)
             "src": "./my-game"        // path relative to where you run the script
         }
     },
     "convert": {
-        "my-game": {
-            "convert-wma-to-ogg": true,
-            "ignore": ["SomeFile.xnb"]
+        "enabled": true,
+        "content": {                 // you can leave an empty object if you wish the default config
+            "my-game": {
+                "convert-wma-to-ogg": true,
+                "ignore": []
+            }
         }
     },
     "output": {
         "enabled": true,
         "delete-extracted-dir": false,
         "delete-converted-dir": false,
-        "my-game": {
-            "enabled": true,
-            "move-to-Content": ["chardef/"],
-            "keep-only-content": true
+        "content": {                 // you can leave an empty object if you wish the default config
+            "my-game": {
+                "enabled": true,
+                "move-to-Content": [],
+                "keep-only-content": true
+            }
         }
     }
 }
 ```
 
-| `type`              | Behavior                                      |
-| --------------------- | --------------------------------------------- |
-| `game-dir`          | Already extracted — source is used as-is     |
-| `content-dir`       | Just a Content folder — no extraction needed |
-| `package` + `XAP` | Renames`.xap` → `.zip` and extracts      |
-| `package` + `360` | Extracts via STFS (Xbox 360 LIVE/PIRS/CON)    |
-
 ## Run
 
+### Full pipeline (config file)
+
 ```bash
-python asset-extractor.py my-config.json
+python asset-extractor.py config my-config.json
 ```
 
 Output lands in `output/<game-id>/`. The pipeline runs in order:
@@ -68,3 +96,30 @@ Output lands in `output/<game-id>/`. The pipeline runs in order:
 3. Convert `.wma` → `.ogg` (requires [ffmpeg](https://ffmpeg.org/))
 4. Assemble final output → `output/<game-id>/`
 5. Post-process (`move-to-Content`, `keep-only-content`)
+
+### Individual steps (CLI)
+
+You can also run each step on its own without a config file:
+
+```bash
+# Extract a package
+python asset-extractor.py extract-360 ./game.pirs --output extracted
+python asset-extractor.py extract-xap ./game.xap -o extracted
+
+# Convert .xnb files (and optionally .wma)
+python asset-extractor.py convert ./Content --output converted
+python asset-extractor.py convert ./Content -o converted --ignore "Arial.xnb" "Font.xnb" --wma-to-ogg
+
+# Assemble final output folder
+python asset-extractor.py assemble ./extracted ./converted --output ./my-game
+```
+
+Run with no arguments to see all available commands:
+
+```bash
+python asset-extractor.py --help
+```
+
+## License
+
+MIT — do whatever you want with this code.

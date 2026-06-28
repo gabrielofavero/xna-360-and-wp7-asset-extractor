@@ -17,32 +17,37 @@
         }
     },
     "convert": {
-        "game-02": {
-            "convert-wma-to-ogg": true,
-            "ignore": [
-                "Arial.xnb"
-            ]
+        "enabled": true,
+        "content": {
+            "game-02": {
+                "convert-wma-to-ogg": true,
+                "ignore": [
+                    "Arial.xnb"
+                ]
+            }
         }
     },
     "output": {
         "enabled": true,
         "delete-extracted-dir": false,
         "delete-converted-dir": false,
-        "game-01": {
-            "enabled": true,
-            "move-to-Content": [
-                "chardef/",
-                "gfx/",
-                "gfx_2/",
-                "maps/",
-                "scene/"
-            ],
-            "keep-only-content": true
-        },
-        "game-02": {
-            "enabled": true,
-            "move-to-Content": [],
-            "keep-only-content": true
+        "content": {
+            "game-01": {
+                "enabled": true,
+                "move-to-Content": [
+                    "chardef/",
+                    "gfx/",
+                    "gfx_2/",
+                    "maps/",
+                    "scene/"
+                ],
+                "keep-only-content": true
+            },
+            "game-02": {
+                "enabled": true,
+                "move-to-Content": [],
+                "keep-only-content": true
+            }
         }
     }
 }
