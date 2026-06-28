@@ -4,3 +4,4 @@
 [submodule "xbla-extract"]
 	path = xbla-extract
 	url = https://github.com/ryzendew/XBLA-Extract
+	ignore = dirty
