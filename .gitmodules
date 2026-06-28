@@ -1,0 +1,6 @@
+[submodule "xnb_parse"]
+	path = xnb_parse
+	url = https://github.com/fesh0r/xnb_parse
+[submodule "xbla-extract"]
+	path = xbla-extract
+	url = https://github.com/ryzendew/XBLA-Extract
