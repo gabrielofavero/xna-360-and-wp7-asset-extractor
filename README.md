@@ -26,7 +26,7 @@ Assembles the final folder for your project:
 - Merges extracted and converted assets together
 - Moves folders into a clean `Content/` structure
 - Removes leftover `.xnb`/`.wma` originals that already have converted versions
-- Optionally deletes intermediate `extracted/` and `converted/` folders
+- Optionally deletes intermediate `extracted/`, `decompressed/` and `converted/` folders
 
 ---
 
@@ -62,6 +62,7 @@ Copy `config-example.json` and edit it for your game:
         "content": {                         // you can leave an empty object if you wish the default config
             "my-game": {
                 "convert-wma-to-ogg": true,
+                "only-decompress": false,     // set true to skip XNB conversion (keep .xnb files)
                 "ignore": []
             }
         }
@@ -69,6 +70,7 @@ Copy `config-example.json` and edit it for your game:
     "output": {
         "enabled": true,
         "delete-extracted-dir": false,
+        "delete-decompressed-dir": false,
         "delete-converted-dir": false,
         "content": {                         // you can leave an empty object if you wish the default config
             "my-game": {
@@ -93,10 +95,11 @@ python asset-extractor.py config my-config.json
 Output lands in `output/<game-id>/`. The pipeline runs in order:
 
 1. Extract content → `extracted/<game-id>/`
-2. Convert `.xnb` files → `converted/<game-id>/`
-3. Convert `.wma` → `.ogg` (requires [ffmpeg](https://ffmpeg.org/))
-4. Assemble final output → `output/<game-id>/`
-5. Post-process (`move-to-Content`, `copy-to-content`, `keep-only-content`)
+2. Decompress `.xnb` files → `decompressed/<game-id>/`
+3. Convert `.xnb` files → `converted/<game-id>/`  (skip via `"only-decompress": true` to keep raw .xnb)
+4. Convert `.wma` → `.ogg` (requires [ffmpeg](https://ffmpeg.org/))
+5. Assemble final output → `output/<game-id>/`
+6. Post-process (`move-to-Content`, `copy-to-content`, `keep-only-content`)
 
 **Post-process options:**
 
@@ -112,6 +115,9 @@ You can also run each step on its own without a config file:
 # Extract a package
 python asset-extractor.py extract-360 ./game.pirs --output extracted
 python asset-extractor.py extract-xap ./game.xap -o extracted
+
+# Decompress .xnb files only (no conversion)
+python asset-extractor.py decompress ./Content --output decompressed
 
 # Convert .xnb files (and optionally .wma)
 python asset-extractor.py convert ./Content --output converted

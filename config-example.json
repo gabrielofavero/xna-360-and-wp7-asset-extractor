@@ -18,6 +18,7 @@
     },
     "convert": {
         "enabled": true,
+        "only-decompress": true,
         "content": {
             "game-02": {
                 "convert-wma-to-ogg": true,
@@ -30,6 +31,7 @@
     "output": {
         "enabled": true,
         "delete-extracted-dir": false,
+        "delete-decompressed-dir": false,
         "delete-converted-dir": false,
         "content": {
             "game-01": {

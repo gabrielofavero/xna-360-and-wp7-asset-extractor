@@ -174,14 +174,48 @@ def extract_content(cfg):
                     game_id, src))
             pkg_path = matches[0]
 
+            # Resolve to absolute — stfs_extract changes CWD during extraction
+            pkg_path = os.path.abspath(pkg_path)
+
             if asset_type == "XAP":
                 print("[{}] Extracting XAP package: {}".format(game_id, pkg_path))
                 _extract_xap(pkg_path, dest)
             elif asset_type == "360":
                 print("[{}] Extracting 360 STFS package: {}".format(game_id, pkg_path))
                 extract_live_pirs(pkg_path, dest)
+                _fix_stfs_double_nesting(dest)
 
     return content_types
+
+
+def _fix_stfs_double_nesting(dest):
+    """Fix double-nesting from stfs_extract: dest/extracted/<game>/... -> dest/...
+
+    stfs_extract chdir's into dest then joins dest again in output paths,
+    causing extracted/game-id/extracted/game-id/... Move the inner game contents up.
+    """
+    inner = os.path.join(dest, "extracted")
+    if not os.path.isdir(inner):
+        return
+
+    # Find the game directory inside dest/extracted/
+    game_dirs = [d for d in os.listdir(inner)
+                 if os.path.isdir(os.path.join(inner, d))]
+    if len(game_dirs) != 1:
+        return
+
+    game_dir = os.path.join(inner, game_dirs[0])
+    print("[fixup] Flattening double-nested extraction in '{}'...".format(dest))
+    for item in os.listdir(game_dir):
+        src = os.path.join(game_dir, item)
+        dst = os.path.join(dest, item)
+        if os.path.exists(dst):
+            if os.path.isdir(dst):
+                shutil.rmtree(dst)
+            else:
+                os.remove(dst)
+        shutil.move(src, dst)
+    shutil.rmtree(inner)
 
 
 def _extract_xap(xap_path, dest_dir):
@@ -227,6 +261,74 @@ def _is_ignored(rel_path, ignore_list):
 # ---------------------------------------------------------------------------
 # 4. XNB Conversion
 # ---------------------------------------------------------------------------
+def _find_content_dir(game_id):
+    """Return the Content directory path for a game, or None if not found.
+
+    For 360 STFS packages the Content folder may be nested one level deeper
+    (e.g. extracted/360-game/360-game-id/Content/), so we check for that.
+    """
+    direct = os.path.join("extracted", game_id, "Content")
+    if os.path.isdir(direct):
+        return direct
+
+    # Check one level deeper — if there's exactly one subdirectory, look inside it
+    ext_dir = os.path.join("extracted", game_id)
+    if os.path.isdir(ext_dir):
+        subdirs = [d for d in os.listdir(ext_dir)
+                   if os.path.isdir(os.path.join(ext_dir, d))]
+        if len(subdirs) == 1:
+            nested = os.path.join(ext_dir, subdirs[0], "Content")
+            if os.path.isdir(nested):
+                return nested
+
+    return None
+
+
+def _find_xnbdecomp_exe():
+    """Return the absolute path to xnbdecomp.exe, or None if not found."""
+    # xnbdecomp.exe lives in xnb_parse/bin/ relative to this script
+    possible = os.path.join(
+        SCRIPT_DIR, "xnb_parse", "bin", "xnbdecomp.exe"
+    )
+    if os.path.isfile(possible):
+        return possible
+    return None
+
+
+def _decompress_xnb_dir_to(src_content_dir, dest_dir):
+    """Decompress all compressed .xnb files from *src_content_dir*
+    into *dest_dir* using the bundled xnbdecomp.exe.
+
+    Returns *dest_dir* on success, or *src_content_dir* unchanged if the
+    exe is not available (caller should fall back to the original dir)."""
+    xnbdecomp_exe = _find_xnbdecomp_exe()
+    if xnbdecomp_exe is None:
+        return src_content_dir  # nothing we can do — let read_xnb_dir try the native DLL
+
+    src_content_dir = os.path.abspath(src_content_dir)
+    dest_dir = os.path.abspath(dest_dir)
+
+    # Clean destination so we get a fresh decompressed tree
+    if os.path.exists(dest_dir):
+        shutil.rmtree(dest_dir)
+    os.makedirs(dest_dir)
+
+    print("    Decompressing XNB files with xnbdecomp.exe ...")
+    subprocess.check_call(
+        [xnbdecomp_exe, src_content_dir, dest_dir],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    # xnbdecomp.exe recreates the directory tree inside dest_dir.
+    count = 0
+    for dirpath, _, filenames in os.walk(dest_dir):
+        for fname in filenames:
+            if fname.lower().endswith(".xnb"):
+                count += 1
+    print("    Decompressed {} .xnb file(s).".format(count))
+    return dest_dir
+
+
 def convert_xnb(cfg):
     """
     For each game listed in config['convert'], scan extracted/<game>/Content/
@@ -238,10 +340,10 @@ def convert_xnb(cfg):
         return
 
     for game_id in convert_section.get("content", {}):
-        content_dir = os.path.join("extracted", game_id, "Content")
-        if not os.path.isdir(content_dir):
-            print("[{}] WARNING: Content dir not found: '{}'. Skipping XNB "
-                  "conversion.".format(game_id, content_dir))
+        content_dir = _find_content_dir(game_id)
+        if content_dir is None:
+            print("[{}] WARNING: Content dir not found under 'extracted/{}'. "
+                  "Skipping XNB conversion.".format(game_id, game_id))
             continue
 
         _, ignore_list = get_convert_settings(cfg, game_id)
@@ -257,8 +359,23 @@ def convert_xnb(cfg):
 
         print("[{}] Converting {} .xnb file(s)...".format(game_id, len(active_xnbs)))
 
+        # Pre-decompress compressed .xnb files into a separate directory
+        # so that read_xnb_dir never needs the 32-bit native XNA DLL.
+        decomp_dir = os.path.join("decompressed", game_id)
+        source_dir = _decompress_xnb_dir_to(content_dir, decomp_dir)
+
+        # Check per-game only-decompress, fall back to global convert-level default
+        global_only_decompress = convert_section.get("only-decompress", False)
+        game_convert = convert_section.get("content", {}).get(game_id, {})
+        only_decompress = game_convert.get("only-decompress", global_only_decompress)
+
+        if only_decompress:
+            print("[{}] Decompress-only mode: skipping XNB conversion."
+                  .format(game_id))
+            continue
+
         export_dir = os.path.join("converted", game_id)
-        read_xnb_dir(content_dir, export_dir)
+        read_xnb_dir(source_dir, export_dir)
 
         # Delete converted outputs for ignored .xnb files
         ignored_xnbs = [f for f in xnb_files if _is_ignored(f, ignore_list)]
@@ -299,8 +416,8 @@ def convert_wma_to_ogg(cfg):
 
         wma_files = []
         # Scan extracted Content
-        ext_content = os.path.join("extracted", game_id, "Content")
-        if os.path.isdir(ext_content):
+        ext_content = _find_content_dir(game_id)
+        if ext_content:
             for rel in find_files_by_ext(ext_content, ".wma"):
                 wma_files.append(("extracted", os.path.join(ext_content, rel), rel))
 
@@ -369,20 +486,31 @@ def assemble_output(cfg, content_types):
         if ctype in ("package", "game-dir"):
             print("[{}] Copying extracted content -> output...".format(game_id))
             _copytree_merge(ext_dir, out_dir)
+            # 360 packages often nest Content inside a game-ID subdirectory.
+            # Flatten those so keep-only-content doesn't delete them later.
+            _flatten_nested_content_dirs(out_dir)
         elif ctype == "content-dir":
             # Only copy contents into output/<game>/Content/
             out_content = os.path.join(out_dir, "Content")
             os.makedirs(out_content, exist_ok=True)
-            src_content = os.path.join(ext_dir, "Content")
-            if os.path.isdir(src_content):
+            src_content = _find_content_dir(game_id)
+            if src_content:
                 print("[{}] Copying Content dir -> output...".format(game_id))
                 _copytree_merge(src_content, out_content)
 
-        # Copy converted files over the top (overwriting)
-        if os.path.isdir(conv_dir):
+        # Copy converted files over the top (overwriting).
+        # When only-decompress is set, use the decompressed dir instead.
+        convert_section = cfg.get("convert", {})
+        global_only_decompress = convert_section.get("only-decompress", False)
+        game_convert = convert_section.get("content", {}).get(game_id, {})
+        only_decompress = game_convert.get("only-decompress", global_only_decompress)
+
+        merge_dir = os.path.join("decompressed", game_id) if only_decompress else conv_dir
+        if os.path.isdir(merge_dir):
             out_content = os.path.join(out_dir, "Content")
-            print("[{}] Merging converted assets -> output...".format(game_id))
-            _copytree_merge(conv_dir, out_content)
+            label = "decompressed" if only_decompress else "converted"
+            print("[{}] Merging {} assets -> output...".format(game_id, label))
+            _copytree_merge(merge_dir, out_content)
 
         # Clean up .xnb and .wma that have converted counterparts
         _cleanup_converted_originals(out_dir, game_id, cfg)
@@ -397,6 +525,25 @@ def _copytree_merge(src, dst):
         for fname in filenames:
             shutil.copy2(os.path.join(dirpath, fname),
                          os.path.join(target_dir, fname))
+
+
+def _flatten_nested_content_dirs(out_dir):
+    """360 STFS packages often have a game-ID subdirectory containing the
+    real Content/ folder (e.g. output/pixel/584E07D1/Content/).  Move those
+    nested Content trees up into out_dir/Content/ so that keep-only-content
+    does not delete them."""
+    out_content = os.path.join(out_dir, "Content")
+    os.makedirs(out_content, exist_ok=True)
+
+    for entry in os.listdir(out_dir):
+        entry_path = os.path.join(out_dir, entry)
+        if not os.path.isdir(entry_path) or entry.lower() == "content":
+            continue
+        nested_content = os.path.join(entry_path, "Content")
+        if os.path.isdir(nested_content):
+            print("    Flattening nested Content from '{}' -> Content/".format(entry))
+            _copytree_merge(nested_content, out_content)
+            shutil.rmtree(entry_path)
 
 
 def _cleanup_converted_originals(out_dir, game_id, cfg):
@@ -545,11 +692,21 @@ def cleanup(cfg):
     """Optionally delete extracted/ and converted/ directories."""
     output_cfg = cfg.get("output", {})
 
+    # Only clean up intermediate dirs if output assembly is enabled
+    if not output_cfg.get("enabled", True):
+        return
+
     if output_cfg.get("delete-extracted-dir", False):
         extracted_dir = "extracted"
         if os.path.isdir(extracted_dir):
             print("Deleting extracted directory: '{}'".format(extracted_dir))
             shutil.rmtree(extracted_dir)
+
+    if output_cfg.get("delete-decompressed-dir", False):
+        decompressed_dir = "decompressed"
+        if os.path.isdir(decompressed_dir):
+            print("Deleting decompressed directory: '{}'".format(decompressed_dir))
+            shutil.rmtree(decompressed_dir)
 
     if output_cfg.get("delete-converted-dir", False):
         converted_dir = "converted"
@@ -624,7 +781,16 @@ def cmd_convert(args):
     if active_xnbs:
         print("Converting {} .xnb file(s)...".format(len(active_xnbs)))
         os.makedirs(export_dir, exist_ok=True)
-        read_xnb_dir(content_dir, export_dir)
+
+        # Pre-decompress into a temp dir so the standalone command also
+        # works without the 32-bit native DLL.
+        import tempfile
+        decomp_tmp = tempfile.mkdtemp(prefix="xnb_convert_")
+        try:
+            source_dir = _decompress_xnb_dir_to(content_dir, decomp_tmp)
+            read_xnb_dir(source_dir, export_dir)
+        finally:
+            shutil.rmtree(decomp_tmp, ignore_errors=True)
     else:
         print("No .xnb files to convert.")
 
@@ -655,6 +821,18 @@ def cmd_convert(args):
         else:
             print("No .wma files to convert.")
 
+    print("Done.")
+
+
+def cmd_decompress(args):
+    """Decompress .xnb files in a Content directory using xnbdecomp.exe."""
+    content_dir = args.content_dir
+    if not os.path.isdir(content_dir):
+        die("Content directory not found: '{}'".format(content_dir))
+    output_dir = args.output or "decompressed"
+    os.makedirs(output_dir, exist_ok=True)
+    print("Decompressing XNB files: {} -> {}".format(content_dir, output_dir))
+    _decompress_xnb_dir_to(content_dir, output_dir)
     print("Done.")
 
 
@@ -760,6 +938,13 @@ def main():
     p_conv.add_argument("--wma-to-ogg", action="store_true",
                         help="Also convert .wma files to .ogg (requires ffmpeg)")
     p_conv.set_defaults(func=cmd_convert)
+
+    # decompress <content-dir> [--output <dir>]
+    p_decomp = sub.add_parser("decompress", help="Decompress .xnb files in a Content directory")
+    p_decomp.add_argument("content_dir", help="Path to the Content directory with .xnb files")
+    p_decomp.add_argument("--output", "-o", default="decompressed",
+                           help="Output directory (default: decompressed)")
+    p_decomp.set_defaults(func=cmd_decompress)
 
     # assemble <extracted-dir> <converted-dir> --output <dir>
     p_asm = sub.add_parser("assemble", help="Assemble final output from extracted and converted dirs")
